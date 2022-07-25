@@ -1085,37 +1085,55 @@ class SqlDBSource(_IterableSource, WithUUID):
         collection = db.Table(self.collection_name, metadata, autoload=True, autoload_with=engine)
         cursor = pandas.DataFrame(connection.execute(db.select([collection])).fetchall())
 
-        for body in cursor:
-            create_event = True
-            key = None
-            if self._key_field:
-                if isinstance(self._key_field, list):
-                    key = []
-                    for key_field in self._key_field:
-                        if key_field not in body or pandas.isna(body[key_field]):
+        async def _run_loop(self):
+            import sqlalchemy as db
+            engine = db.create_engine(self.db_path)
+            metadata = db.MetaData()
+            connection = engine.connect()
+            collection = db.Table(self.collection_name, metadata, autoload=True, autoload_with=engine)
+            results = connection.execute(db.select([collection])).fetchall()
+            df = pandas.DataFrame(results)
+            df.columns = results[0].keys()
+            connection.close()
+
+            for namedtuple in df.itertuples():
+                create_event = True
+                body = namedtuple._asdict()
+                index = body.pop('Index')
+                if len(df.index.names) > 1:
+                    for i, index_column in enumerate(df.index.names):
+                        body[index_column] = index[i]
+                elif df.index.names[0] is not None:
+                    body[df.index.names[0]] = index
+                key = None
+                if self._key_field:
+                    if isinstance(self._key_field, list):
+                        key = []
+                        for key_field in self._key_field:
+                            if key_field not in body or pandas.isna(body[key_field]):
+                                create_event = False
+                                break
+                            key.append(body[key_field])
+                    else:
+                        key = body[self._key_field]
+                        if key is None:
                             create_event = False
-                            break
-                        key.append(body[key_field])
+                if create_event:
+                    time = None
+                    if self._time_field:
+                        time = self.get_val_from_multi_dictionary(body, self._time_field)
+                    if self._id_field:
+                        _id = self.get_val_from_multi_dictionary(body, self._id_field)
+                    else:
+                        _id = self._get_uuid()
+                    event = Event(body, key=key, time=time, id=_id)
+                    await self._do_downstream(event)
                 else:
-                    key = body[self._key_field]
-                    if key is None:
-                        create_event = False
-            if create_event:
-                time = None
-                if self._time_field:
-                    time = self.get_val_from_multi_dictionary(body, self._time_field)
-                if self._id_field:
-                    _id = self.get_val_from_multi_dictionary(body, self._id_field)
-                else:
-                    _id = self._get_uuid()
-                event = Event(body, key=key, time=time, id=_id)
-                await self._do_downstream(event)
-            else:
-                if self.context:
-                    self.context.logger.error(
-                        f"For {body} value of key {key_field} is None"
-                    )
-        return await self._do_downstream(_termination_obj)
+                    if self.context:
+                        self.context.logger.error(
+                            f"For {body} value of key {key_field} is None"
+                        )
+            return await self._do_downstream(_termination_obj)
 
     def get_val_from_multi_dictionary(self, event, field):
         for f in field:
