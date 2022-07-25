@@ -875,3 +875,119 @@ class ParquetSource(DataframeSource):
             else:
                 df = pandas.read_parquet(path, columns=self._columns, storage_options=self._storage_options)
             self._dfs.append(df)
+
+
+class SqlDBSource(_IterableSource, WithUUID):
+    """Use mongodb collection as input source for a flow.
+
+        :parameter key_field: column to be used as key for events. can be list of columns
+        :parameter time_field: column to be used as time for events.
+        :parameter id_field: column to be used as ID for events.
+        :parameter db_name: the name of the database to access
+        :parameter connection_string: your mongodb connection string
+        :parameter collection_name: the name of the collection to access,
+                                    from the current database
+        :parameter query: dictionary query for mongodb
+        :parameter start_filter: If not None, the results will be filtered by partitions and 'filter_column' > start_filter.
+                                Default is None
+        :parameter end_filter:  If not None, the results will be filtered by partitions 'filter_column' <= end_filter.
+                                Default is None
+
+        """
+
+    def __init__(
+            self,
+            db_path: str = None,
+            collection_name: str = None,
+            query: dict = None,
+            key_field: Optional[Union[str, List[str]]] = None,
+            start_filter: Optional[datetime] = None,
+            end_filter: Optional[datetime] = None,
+            time_field: Optional[str] = None,
+            id_field: Optional[str] = None,
+            **kwargs,
+    ):
+        # if query is None:
+        #     query = {}
+        # if time_field:
+        #     time_query = {time_field: {}}
+        #     if start_filter:
+        #         time_query[time_field]["$gte"] = start_filter
+        #     if end_filter:
+        #         time_query[time_field]["$lt"] = end_filter
+        #     if time_query[time_field]:
+        #         query.update(time_query)
+
+        if key_field is not None:
+            kwargs["key_field"] = key_field
+        if time_field is not None:
+            kwargs["time_field"] = time_field
+        if id_field is not None:
+            kwargs["id_field"] = id_field
+        _IterableSource.__init__(self, **kwargs)
+        WithUUID.__init__(self)
+
+        if not all([db_path, collection_name]):
+            raise ValueError(
+                "cannot specify without db_path and collection_name args"
+            )
+
+        self.query = query
+        self.collection_name = collection_name
+        self.db_path = db_path
+
+        self._key_field = key_field
+        if isinstance(time_field, str) and '.' in time_field:
+            self._time_field = time_field.split(".")
+        else:
+            self._time_field = time_field
+        if isinstance(id_field, str) and '.' in id_field:
+            self._id_field = id_field.split(".")
+        else:
+            self._id_field = id_field
+
+    async def _run_loop(self):
+        import sqlalchemy as db
+        engine = db.create_engine(self.db_path)
+        metadata = db.MetaData()
+        connection = engine.connect()
+        collection = db.Table(self.collection_name, metadata, autoload=True, autoload_with=engine)
+        cursor = connection.execute(db.select([collection])).fetchall()
+
+        for body in cursor:
+            create_event = True
+            key = None
+            if self._key_field:
+                if isinstance(self._key_field, list):
+                    key = []
+                    for key_field in self._key_field:
+                        if key_field not in body or pandas.isna(body[key_field]):
+                            create_event = False
+                            break
+                        key.append(body[key_field])
+                else:
+                    key = body[self._key_field]
+                    if key is None:
+                        create_event = False
+            if create_event:
+                time = None
+                if self._time_field:
+                    time = self.get_val_from_multi_dictionary(body, self._time_field)
+                if self._id_field:
+                    _id = self.get_val_from_multi_dictionary(body, self._id_field)
+                else:
+                    _id = self._get_uuid()
+                event = Event(body, key=key, time=time, id=_id)
+                await self._do_downstream(event)
+            else:
+                if self.context:
+                    self.context.logger.error(
+                        f"For {body} value of key {key_field} is None"
+                    )
+        return await self._do_downstream(_termination_obj)
+
+    def get_val_from_multi_dictionary(self, event, field):
+        for f in field:
+            event = event[f]
+
+        return event
