@@ -1083,7 +1083,7 @@ class SqlDBSource(_IterableSource, WithUUID):
         metadata = db.MetaData()
         connection = engine.connect()
         collection = db.Table(self.collection_name, metadata, autoload=True, autoload_with=engine)
-        cursor = connection.execute(db.select([collection])).fetchall()
+        cursor = pandas.DataFrame(connection.execute(db.select([collection])).fetchall())
 
         for body in cursor:
             create_event = True
