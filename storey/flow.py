@@ -1525,7 +1525,7 @@ class ParallelExecutionRunnable:
     execution_mechanism: Optional[str] = None
 
     # ignore unused keyword arguments such as context which may be passed in by mlrun
-    def __init__(self, name: str, raise_exception: bool = True, **kwargs):
+    def __init__(self, name: str, raise_exception: bool = True, shared_runnable_name: Optional[str] = None, **kwargs):
         if self.execution_mechanism not in ParallelExecutionMechanisms.all():
             raise ValueError(
                 "ParallelExecutionRunnable's execution_mechanism attribute must be overridden with one of: "
@@ -1533,6 +1533,7 @@ class ParallelExecutionRunnable:
             )
         self.name = name
         self._raise_exception = raise_exception
+        self.shared_runnable_name = shared_runnable_name
 
     def init(self) -> None:
         """Override this method to add initialization logic."""
@@ -1819,7 +1820,7 @@ class ParallelExecution(Flow):
                 )
                 if runnable.execution_mechanism == ParallelExecutionMechanisms.shared_executor:
                     future = self.context.executor.run_executor(
-                        runnable=runnable.name, runnables_encountered=runnables_encountered, event=event
+                        runnable=runnable.shared_runnable_name, runnables_encountered=runnables_encountered, event=event
                     )
                 else:
                     future = self.runnable_executor.run_executor(
