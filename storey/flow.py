@@ -342,13 +342,6 @@ class Flow:
             try:
                 return await recovery_step._do(event)
             except BaseException as recovery_ex:
-                # The recovery step (error handler) itself failed. Don't let it propagate raw,
-                # which would poison an explicit-ack source and prevent the event from being
-                # committed. Route it to the error stream if available, otherwise re-raise.
-                # We invoke recovery_step._do (not _do_and_recover) and handle the failure here
-                # rather than re-entering recovery, to avoid infinite recovery loops when recovery
-                # steps are wired in a cycle (e.g. a graph-wide error handler that is its own
-                # recovery step).
                 if getattr(recovery_ex, "_raised_by_storey_step", None) is None:
                     recovery_ex._raised_by_storey_step = recovery_step
                 return await self._handle_unrecovered_error(event, recovery_ex)
